@@ -1,0 +1,194 @@
+#!/bin/bash -ex
+
+# see: http://www.rabbitmq.com/ssl.html
+
+##
+gen_ca_setup() {
+    export _CA="testca"
+    export _CADIR="$(pwd)/${_CA}"
+    export _SRVDIR="$(pwd)/server"
+    export _PASSWORD="test123"
+    export _HOSTNAME="$(hostname)"
+} ##
+
+##
+gen_ca_clean() {
+    PREFIX=${1:-"."}
+    rm -rf $PREFIX/testca $PREFIX/server $PREFIX/client
+} ##
+
+gen_ca_mgmtscripts() {
+    gen_ca_setup
+
+    SCRIPTPATH=$(readlink -f $0)
+    SCRIPTNAME=$(basename $0)
+    if [[ ! -f "${SCRIPTNAME}" ]]; then
+        cat "${SCRIPTPATH}" > "./${SCRIPTNAME}"
+        chmod u+x "${SCRIPTNAME}"
+    fi
+
+    if [[ ! -f "Makefile" ]]; then
+        cat > Makefile << EOF
+buildall:
+	./${SCRIPTNAME}
+
+all: buildall
+
+clean:
+	rm -rf ./testca ./server ./client
+EOF
+    fi
+
+}
+
+##
+gen_ca_certificate() {
+    gen_ca_setup
+
+    SUBJECT=${1:-"CN=MyTestCA"}
+    CADIR=${2:-"${_CADIR}"}
+
+    if [[ -d "${CADIR}" ]]; then
+        echo "${CADIR} exists... returning"
+        return
+    fi
+
+    mkdir $CADIR
+    cd $CADIR
+
+    mkdir certs private
+    chmod 700 private
+    echo 01 > serial
+    touch index.txt
+
+    cat > openssl.cnf << EOF
+[ ca ]
+default_ca = ${_CA}
+
+[ ${_CA} ]
+dir = ${CADIR}
+certificate = ${CADIR}/cacert.pem
+database = ${CADIR}/index.txt
+new_certs_dir = ${CADIR}/certs
+private_key = ${CADIR}/private/cakey.pem
+serial = ${CADIR}/serial
+
+default_crl_days = 7
+default_days = 365
+default_md = sha1
+
+policy = ${_CA}_policy
+x509_extensions = certificate_extensions
+
+[ ${_CA}_policy ]
+commonName = supplied
+stateOrProvinceName = optional
+countryName = optional
+emailAddress = optional
+organizationName = optional
+organizationalUnitName = optional
+
+[ certificate_extensions ]
+basicConstraints = CA:false
+
+[ req ]
+default_bits = 2048
+default_keyfile = ./private/cakey.pem
+default_md = sha1
+prompt = yes
+distinguished_name = root_ca_distinguished_name
+x509_extensions = root_ca_extensions
+
+[ root_ca_distinguished_name ]
+commonName = hostname
+
+[ root_ca_extensions ]
+basicConstraints = CA:true
+keyUsage = keyCertSign, cRLSign
+
+[ client_ca_extensions ]
+basicConstraints = CA:false
+keyUsage = digitalSignature
+extendedKeyUsage = 1.3.6.1.5.5.7.3.2
+
+[ server_ca_extensions ]
+basicConstraints = CA:false
+keyUsage = keyEncipherment
+extendedKeyUsage = 1.3.6.1.5.5.7.3.1
+EOF
+
+    openssl req \
+        -x509 \
+        -config openssl.cnf \
+        -newkey rsa:2048 \
+        -days 365 \
+        -out cacert.pem \
+        -outform PEM \
+        -subj "/${SUBJECT}/" \
+        -nodes
+
+    openssl x509 \
+        -in cacert.pem \
+        -out cacert.cer \
+        -outform DER
+
+    cd ..
+} ##
+
+##
+gen_certificate() {
+    gen_ca_setup
+
+    TYPE=${1:-"client"} # client || server
+    HOSTNAME=${2:-"${_HOSTNAME}"}
+    CRTDIR=${3:-"$(pwd)/${TYPE}/${HOSTNAME}"}
+    PASSWORD=${4:-"${_PASSWORD}"}
+    CADIR=${5:-"${_CADIR}"}
+
+    SUBJECT="CN=${HOSTNAME}/O=${TYPE}"
+
+    __CWD="$(pwd)"
+
+    [[ -d "${CRTDIR}" ]] || mkdir -p "${CRTDIR}"
+
+    # request
+    cd $CRTDIR
+    openssl genrsa -out key.pem 2048
+    openssl req -new \
+        -key key.pem \
+        -out req.pem \
+        -outform PEM \
+        -subj "/${SUBJECT}/" \
+        -nodes
+
+    # sign
+    cd $CADIR
+    openssl ca \
+        -config openssl.cnf \
+        -in $CRTDIR/req.pem \
+        -out $CRTDIR/cert.pem \
+        -notext \
+        -batch \
+        -extensions ${TYPE}_ca_extensions
+
+    # package
+    cd $CRTDIR
+    openssl pkcs12 -export \
+        -out keycert.p12 \
+        -in cert.pem \
+        -inkey key.pem \
+        -passout pass:${PASSWORD}
+
+    cd $__CWD
+} ##
+
+##
+ex() {
+    gen_ca_mgmtscripts
+    gen_ca_certificate
+    gen_certificate server
+    gen_certificate client
+} ##
+
+
+ex
