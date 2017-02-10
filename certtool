@@ -8,7 +8,7 @@ gen_ca_setup() {
     export _CADIR="$(pwd)/${_CA}"
     export _SRVDIR="$(pwd)/server"
     export _PASSWORD="test123"
-    export _HOSTNAME="$(hostname)"
+    export _HOSTNAME="$(hostname -f)"
 } ##
 
 ##
